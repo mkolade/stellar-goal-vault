@@ -504,7 +504,7 @@ use soroban_sdk::{
         assert!(!campaign.claimed);
         assert!(!campaign.canceled);
         assert_eq!(campaign.contributor_count, 0);
-                          }
+    }
 
     #[test]
     #[should_panic(expected = "contract is paused")]
@@ -1529,5 +1529,292 @@ use soroban_sdk::{
         assert_eq!(token_client.balance(&creator), 1_000);
         assert_eq!(token_client.balance(&fee_recipient), 0);
     }
+
+
+    // --- Failure-path coverage (issue #989) ---
+    // Invalid input, missing data, duplicate actions, deadline/timeout, and
+    // permission failures asserted by panic behavior (not snapshots alone).
+
+    #[test]
+    #[should_panic(expected = "target amount must be positive")]
+    fn test_create_campaign_rejects_non_positive_target() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &0_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "zero target"),
+            &0_i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "deadline must be in the future")]
+    fn test_create_campaign_rejects_past_deadline() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        let now = env.ledger().timestamp();
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &500_i128,
+            &now,
+            &String::from_str(&env, "past deadline"),
+            &0_i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "deadline exceeds maximum campaign duration")]
+    fn test_create_campaign_rejects_duration_over_max() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        // MAX_CAMPAIGN_DURATION_SECONDS = 180 days; exceed by one second.
+        let excessive = env.ledger().timestamp() + (60 * 60 * 24 * 180) + 1;
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &500_i128,
+            &excessive,
+            &String::from_str(&env, "too long"),
+            &0_i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "accepted_tokens must not be empty")]
+    fn test_create_campaign_rejects_empty_accepted_tokens() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let client = deploy_contract(&env);
+
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env],
+            &500_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "no tokens"),
+            &0_i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate token addresses")]
+    fn test_create_campaign_rejects_duplicate_tokens() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone(), token.clone()],
+            &500_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "dup tokens"),
+            &0_i128,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "max_per_contributor must not be negative")]
+    fn test_create_campaign_rejects_negative_max_per_contributor() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &500_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "neg cap"),
+            &(-1_i128),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "campaign not found")]
+    fn test_get_campaign_missing_id_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = deploy_contract(&env);
+        let _ = client.get_campaign(&999_u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "campaign funding cap exceeded")]
+    fn test_contribute_rejects_funding_cap_exceeded() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &contributor, 2_000);
+        let client = deploy_contract(&env);
+
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &1_000_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "over target"),
+            &0_i128,
+        );
+
+        client.contribute(&campaign_id, &contributor, &token, &1_001);
+    }
+
+    #[test]
+    #[should_panic(expected = "token not accepted by this campaign")]
+    fn test_contribute_rejects_unaccepted_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let accepted = deploy_token(&env, &admin, &contributor, 1_000);
+        let other = deploy_token(&env, &admin, &contributor, 1_000);
+        let client = deploy_contract(&env);
+
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, accepted],
+            &1_000_i128,
+            &(env.ledger().timestamp() + 1_000),
+            &String::from_str(&env, "wrong token"),
+            &0_i128,
+        );
+
+        client.contribute(&campaign_id, &contributor, &other, &500);
+    }
+
+    #[test]
+    #[should_panic(expected = "campaign deadline reached")]
+    fn test_contribute_rejects_after_deadline() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &contributor, 1_000);
+        let client = deploy_contract(&env);
+
+        let deadline_offset: u64 = 50;
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &1_000_i128,
+            &(env.ledger().timestamp() + deadline_offset),
+            &String::from_str(&env, "late pledge"),
+            &0_i128,
+        );
+
+        advance_time(&env, deadline_offset + 1);
+        client.contribute(&campaign_id, &contributor, &token, &500);
+    }
+
+    #[test]
+    #[should_panic(expected = "funded campaigns cannot be refunded")]
+    fn test_refund_rejects_funded_campaign_after_deadline() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &contributor, 1_000);
+        let client = deploy_contract(&env);
+
+        let deadline_offset: u64 = 50;
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &1_000_i128,
+            &(env.ledger().timestamp() + deadline_offset),
+            &String::from_str(&env, "funded no refund"),
+            &0_i128,
+        );
+
+        client.contribute(&campaign_id, &contributor, &token, &1_000);
+        advance_time(&env, deadline_offset + 1);
+        client.refund(&campaign_id, &contributor);
+    }
+
+    #[test]
+    #[should_panic(expected = "nothing to refund")]
+    fn test_refund_rejects_when_nothing_to_refund() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &contributor, 500);
+        let client = deploy_contract(&env);
+
+        let deadline_offset: u64 = 50;
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &1_000_i128,
+            &(env.ledger().timestamp() + deadline_offset),
+            &String::from_str(&env, "no pledge refund"),
+            &0_i128,
+        );
+
+        client.contribute(&campaign_id, &contributor, &token, &500);
+        advance_time(&env, deadline_offset + 1);
+        // Stranger never pledged — nothing to refund.
+        client.refund(&campaign_id, &stranger);
+    }
+
+
+    #[test]
+    #[should_panic(expected = "fee must be non-negative")]
+    fn test_set_fee_rejects_negative() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let client = deploy_contract(&env);
+        client.initialize(&admin, &100_i128);
+        client.set_fee(&admin, &(-1_i128));
+    }
+
 
 }
