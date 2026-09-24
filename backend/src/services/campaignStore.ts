@@ -436,6 +436,20 @@ export interface ListCampaignsOptions {
   page?: number;
   limit?: number;
   sort?: CampaignSortField;
+  sortOrder?: SortOrder;
+}
+
+export interface CampaignDetailOptions {
+  includePledges?: boolean;
+  includeHistory?: boolean;
+}
+
+export interface CampaignDetailResult {
+  campaign: CampaignRecord;
+  progress: CampaignProgress;
+  pledges?: PledgeRecord[];
+  history?: BlockchainMetadata[];
+}ld;
   order?: SortOrder;
   createdAfter?: number;
   createdBefore?: number;
